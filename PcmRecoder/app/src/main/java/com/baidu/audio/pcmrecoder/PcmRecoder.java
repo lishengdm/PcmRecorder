@@ -7,28 +7,33 @@ import android.media.MediaRecorder;
 import android.os.Environment;
 import android.os.Handler;
 import android.os.Message;
-import android.preference.Preference;
+import android.util.Log;
 
+import java.io.BufferedOutputStream;
 import java.io.File;
-import java.io.FileNotFoundException;
 import java.io.FileOutputStream;
 import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
-import java.util.logging.LogRecord;
 
 /**
  * Created by lisheng on 15/1/22.
  */
 public class PcmRecoder {
 
-    static class HandlerMsg {
+    private static final String LOG_TAG = PcmRecoder.class.getSimpleName();
+
+    public static class HandlerErrorMsg {
         public static final int MSG_ERROR_INIT_OUTPUT_STREAM_FAIL = 0;
-        public static final int MSG_START_RECORDING = 1;
+        public static final int MSG_ERROR_CAN_NOT_WRITE_OUTPUT_STREAM = 1;
         public static final int MSG_ERROR_AUDIO_RECORD_NOT_INITIALIZED = 2;
     }
 
-    interface OnPcmRecorderListener {
+    public static class HandlerMsg {
+        public static final int MSG_START_RECORDING = 1;
+    }
+
+    public interface OnPcmRecorderListener {
         /**
          * invoked when error happens during recording
          */
@@ -51,24 +56,24 @@ public class PcmRecoder {
 
     private String mAudioOutputFileName = "sample.pcm";
     private String mAudioOutputFileDirPath = Environment.getExternalStorageDirectory()
-            + "PcmRecorder";
+            + File.separator + "PcmRecorder";
 
     private volatile boolean mIsRecorkding = false;
 
     private AudioRecord mAudioRecord = null;
     private Context mContext = null;
 
-    private byte[] mAudioRecordLock = new byte[0];
+    private final byte[] mAudioRecordLock = new byte[0];
     private Handler mUIHandler;
 
-    private Preference.OnPreferenceChangeListener mListener;
+    private OnPcmRecorderListener mListener;
 
-    public PcmRecoder(Context ctx, Preference.OnPreferenceChangeListener listener) {
-        if (ctx == null) {
+    public PcmRecoder(Context ctx, OnPcmRecorderListener listener) {
+        if (ctx != null) {
             this.mContext = ctx;
         }
 
-        if (listener == null) {
+        if (listener != null) {
             this.mListener = listener;
         }
 
@@ -103,7 +108,7 @@ public class PcmRecoder {
                 mAudioSampleRate, mAudioChannel, mAudioFormat
         );
         mAudioRecord = new AudioRecord(
-                mAudioSource, mAudioSampleRate, mAudioChannel, mAudioFormat, minimumBufferSize
+                mAudioSource, mAudioSampleRate, mAudioChannel, mAudioFormat, minimumBufferSize * 2
         );
     }
 
@@ -112,10 +117,11 @@ public class PcmRecoder {
      */
     public void startRecording() {
         if (mAudioRecord == null) {
-            mUIHandler.obtainMessage(HandlerMsg.MSG_ERROR_AUDIO_RECORD_NOT_INITIALIZED)
+            mUIHandler.obtainMessage(HandlerErrorMsg.MSG_ERROR_AUDIO_RECORD_NOT_INITIALIZED)
                     .sendToTarget();
         }
 
+        new RecorderThread().start();
         mUIHandler.obtainMessage(HandlerMsg.MSG_START_RECORDING).sendToTarget();
     }
 
@@ -149,31 +155,48 @@ public class PcmRecoder {
          */
         @Override
         public void run() {
-            if (initOutputFile()) {
-                short sData[] = new short[minimumBufferSize / 2];
-
-                FileOutputStream os = null;
+            if (initOutputFile(mAudioOutputFileDirPath, mAudioOutputFileName)) {
+                // prepare for start record
+                mIsRecorkding = true;
+                short sData[] = new short[minimumBufferSize];
+                BufferedOutputStream bufferedOutputStream = null;
+                // start record
+                mAudioRecord.startRecording();
                 try {
-                    os = new FileOutputStream(mAudioOutputFileDirPath + mAudioOutputFileName);
-                } catch (FileNotFoundException e) {
-                    e.printStackTrace();
-                }
-
-                while (mIsRecorkding) {
-                    synchronized (mAudioRecordLock) {
-                        if (mAudioRecord != null) {
-                            mAudioRecord.read(sData, 0, minimumBufferSize);
-                            try {
+                    // initiate output stream
+                    bufferedOutputStream = new BufferedOutputStream(
+                            new FileOutputStream(mAudioOutputFileDirPath + File.separator
+                                    + mAudioOutputFileName)
+                    );
+                    while (mIsRecorkding) {
+                        synchronized (mAudioRecordLock) {
+                            if (mAudioRecord != null) {
+                                int readLen = mAudioRecord.read(sData, 0, minimumBufferSize);
+                                Log.d(LOG_TAG, "read len [" + readLen + "] shorts");
                                 byte bData[] = short2byte(sData);
-                                os.write(bData, 0, minimumBufferSize);
-                            } catch (IOException e) {
-                                e.printStackTrace();
+                                bufferedOutputStream.write(bData, 0, minimumBufferSize * 2);
+                                bufferedOutputStream.flush();
                             }
+                        }
+                    }
+                } catch (IOException e) {
+                    // can't write to the output file
+                    e.printStackTrace();
+                    mUIHandler.obtainMessage(HandlerErrorMsg.MSG_ERROR_CAN_NOT_WRITE_OUTPUT_STREAM)
+                            .sendToTarget();
+                } finally {
+                    if (bufferedOutputStream != null) {
+                        try {
+                            bufferedOutputStream.close();
+                        } catch (IOException e) {
+                            // can't close the output stream
+                            e.printStackTrace();
                         }
                     }
                 }
             } else {
-                mUIHandler.obtainMessage(HandlerMsg.MSG_ERROR_INIT_OUTPUT_STREAM_FAIL)
+                // create output file fail
+                mUIHandler.obtainMessage(HandlerErrorMsg.MSG_ERROR_INIT_OUTPUT_STREAM_FAIL)
                         .sendToTarget();
             }
         }
@@ -184,30 +207,33 @@ public class PcmRecoder {
      *
      * @return if the output file has been created successfully
      */
-    private boolean initOutputFile() {
-        File outputFileDir = new File(mAudioOutputFileDirPath);
-
-        if (outputFileDir.isDirectory() || outputFileDir.mkdirs()) {
-            File outputFile = new File(mAudioOutputFileDirPath + mAudioOutputFileName);
-            if (!outputFile.exists()) {
-                try {
-                    if (outputFile.createNewFile()) {
-                        return true;
-                    }
-                } catch (IOException e) {
-                    e.printStackTrace();
-                }
+    private boolean initOutputFile(String dirPath, String fileName) {
+        File outputFileDir = new File(dirPath);
+        // if the output dir isn't exist and make dir fail, return false
+        if (!outputFileDir.isDirectory() && !outputFileDir.mkdirs()) {
+            return false;
+        }
+        File outputFile = new File(dirPath + File.separator + fileName);
+        // if the file does't exist, create it
+        if (!outputFile.exists()) {
+            try {
+                outputFile.createNewFile();
+            } catch (IOException e) {
+                // can't create the output file
+                return false;
             }
         }
-        return false;
+        return true;
     }
 
     public void stopRecording() {
-        mIsRecorkding = false;
-        synchronized (mAudioRecordLock) {
-            mAudioRecord.stop();
-            mAudioRecord.release();
-            mAudioRecord = null;
+        if (mIsRecorkding) {
+            synchronized (mAudioRecordLock) {
+                mAudioRecord.stop();
+                mAudioRecord.release();
+                mAudioRecord = null;
+            }
+            mIsRecorkding = false;
         }
     }
 
