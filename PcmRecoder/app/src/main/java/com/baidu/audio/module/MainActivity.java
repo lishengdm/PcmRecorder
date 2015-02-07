@@ -27,7 +27,7 @@ public class MainActivity extends Activity implements View.OnClickListener{
         initUI();
 
         mRecorderListener = new MyPcmRecorderListener();
-        mPcmRecoder = new PcmRecoder(this, mRecorderListener);
+        mPcmRecoder = PcmRecoder.getInstance(this, mRecorderListener);
         mPcmRecoder.initiateRecorder();
     }
 

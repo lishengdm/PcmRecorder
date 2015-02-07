@@ -23,14 +23,12 @@ public class PcmRecoder {
 
     private static final String LOG_TAG = PcmRecoder.class.getSimpleName();
 
-    public static class HandlerErrorMsg {
-        public static final int MSG_ERROR_INIT_OUTPUT_STREAM_FAIL = 0;
-        public static final int MSG_ERROR_CAN_NOT_WRITE_OUTPUT_STREAM = 1;
-        public static final int MSG_ERROR_AUDIO_RECORD_NOT_INITIALIZED = 2;
-    }
 
-    public static class HandlerMsg {
-        public static final int MSG_START_RECORDING = 1;
+    public static class WorkStatus {
+        public static final int START_INIT_OUTPUT_FILE_FAIL = 0;
+        public static final int START_RECORDER_NOT_INITIALIZED = 2;
+        public static final int START_RECORDER_SUCCESS = 3;
+        public static final int CALBACK_CAN_NOT_WRITE_OUTPUT_STREAM = 1;
     }
 
     public interface OnPcmRecorderListener {
@@ -68,15 +66,22 @@ public class PcmRecoder {
 
     private OnPcmRecorderListener mListener;
 
-    public PcmRecoder(Context ctx, OnPcmRecorderListener listener) {
-        if (ctx != null) {
-            this.mContext = ctx;
-        }
+    private static PcmRecoder mPcmRecorderInstance = null;
 
-        if (listener != null) {
-            this.mListener = listener;
+    public static PcmRecoder getInstance(Context context, OnPcmRecorderListener listener) {
+        if (mPcmRecorderInstance == null) {
+            synchronized (PcmRecoder.class) {
+                if (mPcmRecorderInstance == null) {
+                    mPcmRecorderInstance = new PcmRecoder(context, listener);
+                }
+            }
         }
+        return mPcmRecorderInstance;
+    }
 
+    private PcmRecoder(Context ctx, OnPcmRecorderListener listener) {
+        this.mContext = ctx;
+        this.mListener = listener;
         // all the call-back method should be invoked in the main looper
         initMainHandler();
     }
@@ -115,14 +120,17 @@ public class PcmRecoder {
     /**
      * start recorder, this method must be invoked after {@link #initiateRecorder()}
      */
-    public void startRecording() {
+    public int startRecording() {
         if (mAudioRecord == null) {
-            mUIHandler.obtainMessage(HandlerErrorMsg.MSG_ERROR_AUDIO_RECORD_NOT_INITIALIZED)
-                    .sendToTarget();
+            return WorkStatus.START_RECORDER_NOT_INITIALIZED;
+        }
+
+        if (!initOutputFile(mAudioOutputFileDirPath, mAudioOutputFileName)) {
+            return WorkStatus.START_INIT_OUTPUT_FILE_FAIL;
         }
 
         new RecorderThread().start();
-        mUIHandler.obtainMessage(HandlerMsg.MSG_START_RECORDING).sendToTarget();
+        return WorkStatus.START_RECORDER_SUCCESS;
     }
 
     public void setAudioChannel(int mAudioChannel) {
@@ -155,49 +163,43 @@ public class PcmRecoder {
          */
         @Override
         public void run() {
-            if (initOutputFile(mAudioOutputFileDirPath, mAudioOutputFileName)) {
-                // prepare for start record
-                mIsRecorkding = true;
-                short sData[] = new short[minimumBufferSize];
-                BufferedOutputStream bufferedOutputStream = null;
-                // start record
-                mAudioRecord.startRecording();
-                try {
-                    // initiate output stream
-                    bufferedOutputStream = new BufferedOutputStream(
-                            new FileOutputStream(mAudioOutputFileDirPath + File.separator
-                                    + mAudioOutputFileName)
-                    );
-                    while (mIsRecorkding) {
-                        synchronized (mAudioRecordLock) {
-                            if (mAudioRecord != null) {
-                                int readLen = mAudioRecord.read(sData, 0, minimumBufferSize);
-                                Log.d(LOG_TAG, "read len [" + readLen + "] shorts");
-                                byte bData[] = short2byte(sData);
-                                bufferedOutputStream.write(bData, 0, minimumBufferSize * 2);
-                                bufferedOutputStream.flush();
-                            }
-                        }
-                    }
-                } catch (IOException e) {
-                    // can't write to the output file
-                    e.printStackTrace();
-                    mUIHandler.obtainMessage(HandlerErrorMsg.MSG_ERROR_CAN_NOT_WRITE_OUTPUT_STREAM)
-                            .sendToTarget();
-                } finally {
-                    if (bufferedOutputStream != null) {
-                        try {
-                            bufferedOutputStream.close();
-                        } catch (IOException e) {
-                            // can't close the output stream
-                            e.printStackTrace();
+            // prepare for start record
+            mIsRecorkding = true;
+            short sData[] = new short[minimumBufferSize];
+            BufferedOutputStream bufferedOutputStream = null;
+            // start record
+            mAudioRecord.startRecording();
+            try {
+                // initiate output stream
+                bufferedOutputStream = new BufferedOutputStream(
+                        new FileOutputStream(mAudioOutputFileDirPath + File.separator
+                                + mAudioOutputFileName)
+                );
+                while (mIsRecorkding) {
+                    synchronized (mAudioRecordLock) {
+                        if (mAudioRecord != null) {
+                            int readLen = mAudioRecord.read(sData, 0, minimumBufferSize);
+                            Log.d(LOG_TAG, "read len [" + readLen + "] shorts");
+                            byte bData[] = short2byte(sData);
+                            bufferedOutputStream.write(bData, 0, minimumBufferSize * 2);
+                            bufferedOutputStream.flush();
                         }
                     }
                 }
-            } else {
-                // create output file fail
-                mUIHandler.obtainMessage(HandlerErrorMsg.MSG_ERROR_INIT_OUTPUT_STREAM_FAIL)
+            } catch (IOException e) {
+                // can't write to the output file
+                e.printStackTrace();
+                mUIHandler.obtainMessage(WorkStatus.CALBACK_CAN_NOT_WRITE_OUTPUT_STREAM)
                         .sendToTarget();
+            } finally {
+                if (bufferedOutputStream != null) {
+                    try {
+                        bufferedOutputStream.close();
+                    } catch (IOException e) {
+                        // can't close the output stream
+                        e.printStackTrace();
+                    }
+                }
             }
         }
     }
@@ -246,5 +248,15 @@ public class PcmRecoder {
             buffer.putShort(i  * 2, shortArray[i]);
         }
         return buffer.array();
+    }
+
+    public static void releaseInstance() {
+        if (mPcmRecorderInstance != null) {
+            synchronized (PcmRecoder.class) {
+                if (mPcmRecorderInstance != null) {
+                    mPcmRecorderInstance = null;
+                }
+            }
+        }
     }
 }
