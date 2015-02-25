@@ -9,6 +9,7 @@ import android.widget.Button;
 
 import com.baidu.audio.pcmrecoder.PcmRecoder;
 import com.baidu.audio.pcmrecoder.R;
+import com.baidu.audio.utility.CheckPerformanceThread;
 
 
 public class MainActivity extends Activity implements View.OnClickListener{
@@ -20,6 +21,8 @@ public class MainActivity extends Activity implements View.OnClickListener{
     private PcmRecoder mPcmRecoder = null;
     private MyPcmRecorderListener mRecorderListener = null;
 
+    private CheckPerformanceThread mPerformanceThread = null;
+
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
@@ -29,6 +32,9 @@ public class MainActivity extends Activity implements View.OnClickListener{
         mRecorderListener = new MyPcmRecorderListener();
         mPcmRecoder = PcmRecoder.getInstance(this, mRecorderListener);
         mPcmRecoder.initiateRecorder();
+
+        mPerformanceThread = new CheckPerformanceThread("com.baidu.audio.pcmrecoder");
+        mPerformanceThread.start();
     }
 
     private void initUI() {
@@ -75,6 +81,7 @@ public class MainActivity extends Activity implements View.OnClickListener{
                 break;
             case R.id.id_stop_record_btn:
                 mPcmRecoder.stopRecording();
+                mPerformanceThread.stopWorking();
                 break;
             default:
                 break;

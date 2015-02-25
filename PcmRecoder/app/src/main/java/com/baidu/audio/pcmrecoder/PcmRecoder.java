@@ -62,7 +62,7 @@ public class PcmRecoder {
     private Context mContext = null;
 
     private final byte[] mAudioRecordLock = new byte[0];
-    private Handler mUIHandler;
+    private Handler mUIHandler = null;
 
     private OnPcmRecorderListener mListener;
 
